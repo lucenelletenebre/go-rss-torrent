@@ -1,0 +1,71 @@
+# Nome del workflow visualizzato in GitHub Actions
+name: Docker Multi-Arch Build and Push (GHCR)
+
+# Definisce quando il workflow deve essere eseguito
+on:
+  # Esegui al push sul branch 'main'
+  push:
+    branches:
+      - main
+  # Permette l'esecuzione manuale dalla UI di GitHub
+  workflow_dispatch:
+
+# Permessi: Necessari per leggere il codice e scrivere sul GHCR
+permissions:
+  contents: read
+  packages: write
+
+# Definisce il lavoro da eseguire
+jobs:
+  build_and_push:
+    name: Build Multi-Arch Image and Push to GHCR
+    runs-on: ubuntu-latest
+    
+    # Variabili d'ambiente per il registry GHCR
+    env:
+      REGISTRY: ghcr.io
+      # Il repository viene definito automaticamente come owner/repo (e.g., myuser/my-app)
+      IMAGE_REPO: ${{ github.repository }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        # Necessario per l'emulazione e la build multi-arch (in particolare per ARM64)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        # Abilita le funzionalità avanzate di build (come la multi-architettura)
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        # Per il GHCR, usiamo l'utente GITHUB_ACTOR e il GITHUB_TOKEN automatico
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          # GITHUB_TOKEN è fornito automaticamente da GitHub Actions
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set Image Tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_REPO }}
+          # Crea i tag: uno con lo SHA breve del commit e 'latest' sul branch di default (main)
+          tags: |
+            type=sha,format=short,prefix=
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          # CRITICO: Specifica le piattaforme da compilare: AMD64 (standard) e ARM64
+          platforms: linux/amd64,linux/arm64
+          # (Opzionale, ma utile) Usa il cache per velocizzare le build future
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

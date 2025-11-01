@@ -42,7 +42,7 @@ go.sum: go.mod main.go
 # ------------------------------------------------------------------------------
 
 # Il target 'build-docker' dipende da 'go.sum', garantendo che i moduli siano aggiornati.
-build-docker: go.sum Dockerfile
+build-docker: go.sum Dockerfile main.go entrypoint.sh
 	@echo "--- Costruisco l'immagine Docker: $(DOCKER_IMAGE_NAME):$(DOCKER_TAG) ---"
 	docker build \
 		-t $(DOCKER_IMAGE_NAME):$(DOCKER_TAG) \

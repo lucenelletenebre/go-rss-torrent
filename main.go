@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort" // Import necessario per l'ordinamento
 	"strings"
 	"time"
 
@@ -21,6 +22,27 @@ const (
 	// Porta su cui è in ascolto il web server
 	ServerPort = "8080"
 )
+
+// --- Logica di Ordinamento per l'RSS ---
+
+// Struttura per contenere i dettagli del file .torrent
+type TorrentFile struct {
+	Name    string
+	ModTime time.Time // Data di ultima modifica
+}
+
+// Implementazione dell'interfaccia sort.Interface per ordinare i file
+// dal più recente al più vecchio (decrescente per ModTime).
+type ByModTimeDesc []TorrentFile
+
+func (a ByModTimeDesc) Len() int { return len(a) }
+
+// Less è TRUE se l'elemento 'i' è considerato "minore" (deve venire prima) di 'j'.
+// Poiché vogliamo che il più recente venga prima, usiamo After().
+func (a ByModTimeDesc) Less(i, j int) bool { return a[i].ModTime.After(a[j].ModTime) }
+func (a ByModTimeDesc) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+
+// --- Funzioni di Core ---
 
 // Funzione principale del cron job: scarica i torrent dal feed RSS
 func downloadTorrents(rssURL string) {
@@ -104,15 +126,49 @@ func downloadTorrents(rssURL string) {
 	log.Println("Download dei torrent completato.")
 }
 
-// Handler per l'endpoint /rss: genera un nuovo feed RSS
+// Handler per l'endpoint /rss: genera un nuovo feed RSS (MODIFICATO con ordinamento)
 func generateRssFeed(w http.ResponseWriter, r *http.Request) {
 	log.Println("Richiesta per la generazione del feed RSS.")
+
+	// 1. Lettura della directory
+	files, err := os.ReadDir(TorrentDir)
+	if err != nil {
+		log.Printf("ERRORE: Impossibile leggere la directory dei torrent: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	var torrents ByModTimeDesc // Lista dei file torrent da ordinare
+
+	// 2. Raccogli i dati e le ModTime
+	for _, file := range files {
+		if file.IsDir() || !strings.HasSuffix(strings.ToLower(file.Name()), ".torrent") {
+			continue // Salta le directory o i file non .torrent
+		}
+
+		info, err := file.Info()
+		if err != nil {
+			log.Printf("ERRORE: Impossibile ottenere le info per il file '%s': %v", file.Name(), err)
+			continue
+		}
+
+		torrents = append(torrents, TorrentFile{
+			Name:    file.Name(),
+			ModTime: info.ModTime(), // Usa la data di ultima modifica
+		})
+	}
+
+	// 3. Ordina i file dal più recente al più vecchio
+	sort.Sort(torrents)
+	log.Printf("Trovati %d file .torrent. Ordinati per data di modifica decrescente.", len(torrents))
+
+	// 4. Generazione dell'output RSS
 
 	// Imposta gli header per un feed RSS
 	w.Header().Set("Content-Type", "application/rss+xml")
 	w.WriteHeader(http.StatusOK)
 
-	// Inizio del documento RSS (sostituisci con informazioni pertinenti)
+	// Inizio del documento RSS
 	rssHeader := `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0">
 <channel>
@@ -123,21 +179,13 @@ func generateRssFeed(w http.ResponseWriter, r *http.Request) {
 `
 	fmt.Fprint(w, rssHeader)
 
-	// Scansiona la directory dei torrent e crea un elemento per ogni file
-	files, err := os.ReadDir(TorrentDir)
-	if err != nil {
-		log.Printf("ERRORE: Impossibile leggere la directory dei torrent: %v", err)
-		// Gestione errore (opzionale, per semplicità qui si salta l'output dei file)
-	}
-
-	for _, file := range files {
-		if file.IsDir() || !strings.HasSuffix(strings.ToLower(file.Name()), ".torrent") {
-			continue // Salta le directory o i file non .torrent
-		}
-
+	// 5. Scrivi gli elementi del feed nell'ordine ordinato
+	for _, torrent := range torrents {
 		// L'URL per scaricare il torrent. Supponiamo che il web server lo serva tramite /files/nome_file
-		// NOTA: Devi aggiungere un handler per /files/nome_file, vedi nota sotto.
-		torrentDownloadURL := "http://" + r.Host + "/files/" + file.Name()
+		torrentDownloadURL := "http://" + r.Host + "/files/" + torrent.Name
+
+		// Utilizza la ModTime del file come PubDate dell'elemento RSS
+		pubDate := torrent.ModTime.Format(time.RFC1123Z)
 
 		item := fmt.Sprintf(`
 <item>
@@ -147,7 +195,7 @@ func generateRssFeed(w http.ResponseWriter, r *http.Request) {
 <pubDate>%s</pubDate>
 <description>Downloaded torrent file: %s</description>
 </item>
-`, file.Name(), torrentDownloadURL, file.Name(), time.Now().Format(time.RFC1123Z), file.Name())
+`, torrent.Name, torrentDownloadURL, torrent.Name, pubDate, torrent.Name)
 
 		fmt.Fprint(w, item)
 	}
